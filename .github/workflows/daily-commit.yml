@@ -1,12 +1,24 @@
-name: Daily Heartbeat
+name: Daily Heartbeat (Randomized 5pm→2pm ET)
 
 on:
   schedule:
-    - cron: "0 10 * * *"   # Runs 10:00 UTC daily (≈ 6am ET during DST)
-  workflow_dispatch:        # Allow manual run
+    - cron: "*/5 * * * *"   # every 5 minutes (UTC)
+  workflow_dispatch:
 
 permissions:
-  contents: write           # Needed so the workflow can push
+  contents: write
+
+concurrency:
+  group: daily-heartbeat-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMMIT_USER_NAME: "Prashanth Madishetti"   # <-- your name
+  COMMIT_USER_EMAIL: "230023683+PrashanthMadishetti@users.noreply.github.com"
+  TZ_REGION: "America/New_York"
+  START_HOUR_ET: "17"   # 5 PM ET
+  END_HOUR_ET: "14"     # 2 PM ET (next day, because 14 < 17)
+  SLOT_MINUTES: "5"     # resolution; keep 5 unless you want coarser timing
 
 jobs:
   beat:
@@ -14,15 +26,102 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Make a tiny change (append timestamp)
+      # Pick today's randomized slot within [5:00 PM ET, next-day 2:00 PM ET)
+      - id: pick
+        name: Pick randomized slot in ET window
+        run: |
+          set -euo pipefail
+
+          # Helper to run `date` in ET easily
+          d_et () { TZ="$TZ_REGION" date "$@"; }
+
+          TODAY_ET="$(d_et +%F)"              # e.g., 2025-09-02
+          TOMORROW_ET="$(d_et -d 'tomorrow' +%F)"
+
+          START_ET="${TODAY_ET} ${START_HOUR_ET}:00:00"
+          # If END_HOUR_ET < START_HOUR_ET, window wraps to tomorrow
+          if [ "${END_HOUR_ET}" -lt "${START_HOUR_ET}" ]; then
+            END_ET="${TOMORROW_ET} ${END_HOUR_ET}:00:00"
+          else
+            END_ET="${TODAY_ET} ${END_HOUR_ET}:00:00"
+          fi
+
+          # Epochs (interpret as ET)
+          START_EPOCH_ET="$(TZ="$TZ_REGION" date -d "$START_ET" +%s)"
+          END_EPOCH_ET="$(TZ="$TZ_REGION" date -d "$END_ET" +%s)"
+
+          # Number of slots of SLOT_MINUTES minutes
+          SLOT_SEC=$(( ${SLOT_MINUTES} * 60 ))
+          TOTAL_SLOTS=$(( (END_EPOCH_ET - START_EPOCH_ET) / SLOT_SEC ))
+          if [ "$TOTAL_SLOTS" -le 0 ]; then
+            echo "Bad window config"; exit 1
+          fi
+
+          # Deterministic pseudo-random slot from hash(repo + date)
+          SEED="${GITHUB_REPOSITORY}-${TODAY_ET}"
+          HASH_HEX="$(printf "%s" "$SEED" | sha1sum | awk '{print $1}')"
+          SLOT_INDEX=$(( (16#${HASH_HEX:0:8}) % TOTAL_SLOTS ))
+
+          TARGET_EPOCH_ET=$(( START_EPOCH_ET + SLOT_INDEX * SLOT_SEC ))
+          TARGET_HH="$(TZ="$TZ_REGION" date -d "@$TARGET_EPOCH_ET" +%H)"
+          TARGET_MM="$(TZ="$TZ_REGION" date -d "@$TARGET_EPOCH_ET" +%M)"
+
+          # Current ET time, floored to SLOT_MINUTES boundary
+          NOW_EPOCH_ET="$(TZ="$TZ_REGION" date +%s)"
+          NOW_FLOOR_EPOCH_ET=$(( (NOW_EPOCH_ET / SLOT_SEC) * SLOT_SEC ))
+          NOW_HH="$(TZ="$TZ_REGION" date -d "@$NOW_FLOOR_EPOCH_ET" +%H)"
+          NOW_MM="$(TZ="$TZ_REGION" date -d "@$NOW_FLOOR_EPOCH_ET" +%M)"
+
+          SHOULD_RUN=false
+          if [ "$NOW_FLOOR_EPOCH_ET" -eq "$TARGET_EPOCH_ET" ]; then
+            SHOULD_RUN=true
+          fi
+
+          echo "today_et=$TODAY_ET" >> "$GITHUB_OUTPUT"
+          echo "start_et=$START_ET" >> "$GITHUB_OUTPUT"
+          echo "end_et=$END_ET" >> "$GITHUB_OUTPUT"
+          echo "target_hm=${TARGET_HH}:${TARGET_MM}" >> "$GITHUB_OUTPUT"
+          echo "now_hm=${NOW_HH}:${NOW_MM}" >> "$GITHUB_OUTPUT"
+          echo "should_run=$SHOULD_RUN" >> "$GITHUB_OUTPUT"
+          echo "target_epoch_et=$TARGET_EPOCH_ET" >> "$GITHUB_OUTPUT"
+          echo "start_epoch_et=$START_EPOCH_ET" >> "$GITHUB_OUTPUT"
+
+      # Ensure we haven't already committed within the current window
+      - id: done
+        name: Check if a commit already exists in the current window
+        run: |
+          set -euo pipefail
+          START_EPOCH_ET="${{ steps.pick.outputs.start_epoch_et }}"
+          # Convert ET start epoch to UTC format "@<epoch>" is timezone-agnostic for git
+          git fetch --no-tags origin ${{ github.ref_name }}
+          if git log origin/${{ github.ref_name }} \
+               --since="@${START_EPOCH_ET}" \
+               --author="${{ env.COMMIT_USER_EMAIL }}" \
+               --pretty=format:%H | head -n 1 | grep -q .; then
+            echo "already_done=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_done=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Make tiny change
+        if: steps.pick.outputs.should_run == 'true' && steps.done.outputs.already_done == 'false'
         run: |
           echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> .keep
 
       - name: Commit and push if changed
+        if: steps.pick.outputs.should_run == 'true' && steps.done.outputs.already_done == 'false'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Feature added"
+          commit_message: "chore: daily heartbeat"
           file_pattern: ".keep"
-          commit_user_name: "Prashanth Madishetti"
-          commit_user_email: "230023683+PrashanthMadishetti@users.noreply.github.com"
-          branch: main
+          commit_user_name: ${{ env.COMMIT_USER_NAME }}
+          commit_user_email: ${{ env.COMMIT_USER_EMAIL }}
+          branch: ${{ github.ref_name }}
+
+      - name: Debug info
+        run: |
+          echo "Window (ET):  ${{ steps.pick.outputs.start_et }}  →  ${{ steps.pick.outputs.end_et }}"
+          echo "Target (ET):  ${{ steps.pick.outputs.target_hm }}"
+          echo "Now (ET):     ${{ steps.pick.outputs.now_hm }}"
+          echo "Should run:   ${{ steps.pick.outputs.should_run }}"
+          echo "Already done: ${{ steps.done.outputs.already_done }}"
