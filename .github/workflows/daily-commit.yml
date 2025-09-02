@@ -1,0 +1,42 @@
+name: Daily Commit
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # runs daily at 14:00 UTC (~10:00 New York most of the year)
+  workflow_dispatch:        # lets you run it manually
+
+permissions:
+  contents: write           # allow this workflow to push commits
+
+env:
+  AUTHOR_NAME: ${{ github.actor }}
+  AUTHOR_EMAIL: "prashanthmadishetti2@gmail.com"
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Update daily log (YAML)
+        run: |
+          mkdir -p logs
+          touch logs/daily.yaml
+          TODAY="$(date -u +%Y-%m-%d)"
+          # append the date once per day (UTC)
+          if ! grep -q "^- ${TODAY}$" logs/daily.yaml; then
+            echo "- ${TODAY}" >> logs/daily.yaml
+          fi
+
+      - name: Commit & push (only if changed)
+        run: |
+          if ! git diff --quiet; then
+            git config user.name  "${AUTHOR_NAME}"
+            git config user.email "${AUTHOR_EMAIL}"
+            git add -A
+            git commit -m "chore: daily log for $(date -u +%Y-%m-%d)"
+            git push
+          else
+            echo "No changes to commit."
+          fi
