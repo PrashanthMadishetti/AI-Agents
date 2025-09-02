@@ -1,42 +1,28 @@
-name: Daily Commit
+name: Daily Heartbeat
 
 on:
   schedule:
-    - cron: "0 14 * * *"   # runs daily at 14:00 UTC (~10:00 New York most of the year)
-  workflow_dispatch:        # lets you run it manually
+    - cron: "0 10 * * *"   # Runs 10:00 UTC daily (≈ 6am ET during DST)
+  workflow_dispatch:        # Allow manual run
 
 permissions:
-  contents: write           # allow this workflow to push commits
-
-env:
-  AUTHOR_NAME: ${{ github.actor }}
-  AUTHOR_EMAIL: "prashanthmadishetti2@gmail.com"
+  contents: write           # Needed so the workflow can push
 
 jobs:
-  daily:
+  beat:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Update daily log (YAML)
+      - name: Make a tiny change (append timestamp)
         run: |
-          mkdir -p logs
-          touch logs/daily.yaml
-          TODAY="$(date -u +%Y-%m-%d)"
-          # append the date once per day (UTC)
-          if ! grep -q "^- ${TODAY}$" logs/daily.yaml; then
-            echo "- ${TODAY}" >> logs/daily.yaml
-          fi
+          echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> .keep
 
-      - name: Commit & push (only if changed)
-        run: |
-          if ! git diff --quiet; then
-            git config user.name  "${AUTHOR_NAME}"
-            git config user.email "${AUTHOR_EMAIL}"
-            git add -A
-            git commit -m "chore: daily log for $(date -u +%Y-%m-%d)"
-            git push
-          else
-            echo "No changes to commit."
-          fi
+      - name: Commit and push if changed
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: daily heartbeat"
+          file_pattern: ".keep"
+          commit_user_name: "Prashanth Madishetti"
+          commit_user_email: "230023683+PrashanthMadishetti@users.noreply.github.com"
+          branch: main
