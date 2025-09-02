@@ -21,7 +21,7 @@ jobs:
       - name: Commit and push if changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: daily heartbeat"
+          commit_message: "Feature added"
           file_pattern: ".keep"
           commit_user_name: "Prashanth Madishetti"
           commit_user_email: "230023683+PrashanthMadishetti@users.noreply.github.com"
